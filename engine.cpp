@@ -105,3 +105,26 @@ static void load_model(const char *path, Model &m)
 
 }
 //
+static void matvec_q(float* y,float* x,const QTensor& w,int out,int in){
+    const int nb = in /GS;
+    const uint8_t* qbase = w.q.data();
+    const float* sbase = w.s.data();
+    #pragma omp parallel for schedule(static)
+        for(int o=0;o<out;o++){
+            const uint8_t* q = qbase + (size_t)o * (in/2);
+            const float* s = sbase +(size_t)o * nb;
+            float acc = 0.f;
+            for(int g=0;g<nb;g++){
+                const uint8_t qg = q + g * 16;
+                const float* xg = x+g * GS;
+                float sum = 0.f;
+                for(int j=0;j<16;j++){
+                    sum += (float)((qg[j]& Ox0F)-8 * xg[j]+ (float)((qg[j]>>4)-8)*xg[j+16]);
+
+                }
+                acc+= sum * s[g];
+
+            }
+            y[o]=acc;
+        }
+}
