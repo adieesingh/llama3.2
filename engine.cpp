@@ -50,7 +50,7 @@ static void read_excat(FILE *f, void *dst, size_t n)
     };
 };
 
-static void load_q( File *f, QTensor &t,size_t rows, size_t cols, int bits)
+static void load_q(File *f, QTensor &t, size_t rows, size_t cols, int bits)
 {
     size_t n = rows * cols;
     t.q.resize(bits == 4 ? n / 2 : n);
@@ -72,59 +72,90 @@ static void load_model(const char *path, Model &m)
         die(std::string("cannot open") + path);
 
     char magic[4];
-    read_excat(f,magic,4);
-    if(memcmp(magic,"L3Q1",4)!=0) die("not an L2Q1 file (run convert_to_q4.py first)");
+    read_excat(f, magic, 4);
+    if (memcmp(magic, "L3Q1", 4) != 0)
+        die("not an L2Q1 file (run convert_to_q4.py first)");
 
-    Config& c =m.c;
+    Config &c = m.c;
     int32_t h[9];
-    read_excat(f,h,sizeof(h));
-    c.dim =h[0];c.hidden=h[1];c.n_layers=h[2];c.n_heads=h[3];c.n_kv_heads=h[4];
-    c.head_dim=h[5];c.vocab=h[6];c.max_seq=h[7];c.group=h[8];
-    read_excat(f,&c.eps,sizeof(float));
-    if(c.group !=GS) die("group size mistach between convertor and engine");
-    if(c.dim%32|| c.hidden % GS || (c.n_heads * c.head_dim)% GS) die("dimensions must be mutlipication of 32");
-    load_f32(f,m.inv_freq,c.head_dim/2);
-    const int kv_dim = c.n_kv_heads * c.head_dim,q_dim=c.n_heads * c.head_dim;
-    load_q(f,m.tock,c.vocab,c.dim,8);
+    read_excat(f, h, sizeof(h));
+    c.dim = h[0];
+    c.hidden = h[1];
+    c.n_layers = h[2];
+    c.n_heads = h[3];
+    c.n_kv_heads = h[4];
+    c.head_dim = h[5];
+    c.vocab = h[6];
+    c.max_seq = h[7];
+    c.group = h[8];
+    read_excat(f, &c.eps, sizeof(float));
+    if (c.group != GS)
+        die("group size mistach between convertor and engine");
+    if (c.dim % 32 || c.hidden % GS || (c.n_heads * c.head_dim) % GS)
+        die("dimensions must be mutlipication of 32");
+    load_f32(f, m.inv_freq, c.head_dim / 2);
+    const int kv_dim = c.n_kv_heads * c.head_dim, q_dim = c.n_heads * c.head_dim;
+    load_q(f, m.tock, c.vocab, c.dim, 8);
     m.layers.resize(c.n_layers);
-    for(int l=0;l<c.n_layers;l++){
-        Layer& L =m.layers[l];
-        load_f32(f,L.attn_norm,c.dim);
-        load_f32(f,L.attn_norm,c.dim);
-        load_q(f,L.wq,q_dim,c.dim,4);
-        load_q(f,L.wk,kv_dim,c.dim,4);
-        load_q(f,L.wv,kv_dim,c.dim,4);
-        load_q(f,L.wo,c.dim,q_dim,4);
-        load_q(f,L.wg,c.hidden,c.dim,4);
-        load_q(f,L.wu,c.hidden,c.dim,4);
-        load_q(f,L.wd,c.dim,c.hidden,4);
-
+    for (int l = 0; l < c.n_layers; l++)
+    {
+        Layer &L = m.layers[l];
+        load_f32(f, L.attn_norm, c.dim);
+        load_f32(f, L.attn_norm, c.dim);
+        load_q(f, L.wq, q_dim, c.dim, 4);
+        load_q(f, L.wk, kv_dim, c.dim, 4);
+        load_q(f, L.wv, kv_dim, c.dim, 4);
+        load_q(f, L.wo, c.dim, q_dim, 4);
+        load_q(f, L.wg, c.hidden, c.dim, 4);
+        load_q(f, L.wu, c.hidden, c.dim, 4);
+        load_q(f, L.wd, c.dim, c.hidden, 4);
     }
-    load_f32(f,m.final_norm,c.dim);
+    load_f32(f, m.final_norm, c.dim);
     fclose(f);
-
 }
 //
-static void matvec_q(float* y,float* x,const QTensor& w,int out,int in){
-    const int nb = in /GS;
-    const uint8_t* qbase = w.q.data();
-    const float* sbase = w.s.data();
+static void matvec_q(float *y, float *x, const QTensor &w, int out, int in)
+{
+    const int nb = in / GS;
+    const uint8_t *qbase = w.q.data();
+    const float *sbase = w.s.data();
+#pragma omp parallel for schedule(static)
+    for (int o = 0; o < out; o++)
+    {
+        const uint8_t *q = qbase + (size_t)o * (in / 2);
+        const float *s = sbase + (size_t)o * nb;
+        float acc = 0.f;
+        for (int g = 0; g < nb; g++)
+        {
+            const uint8_t qg = q + g * 16;
+            const float *xg = x + g * GS;
+            float sum = 0.f;
+            for (int j = 0; j < 16; j++)
+            {
+                sum += (float)((qg[j] & Ox0F) - 8 * xg[j] + (float)((qg[j] >> 4) - 8) * xg[j + 16]);
+            }
+            acc += sum * s[g];
+        }
+        y[o] = acc;
+    }
+}
+static void matvec_q8(float *y, float *x, const QTensor &w, int out, int in)
+{
+    const int nb = in / GS;
+    const int8_t *qbase = (const int8_t *)w.q.data();
+    const float *sbase = w.s.data();
     #pragma omp parallel for schedule(static)
         for(int o=0;o<out;o++){
-            const uint8_t* q = qbase + (size_t)o * (in/2);
-            const float* s = sbase +(size_t)o * nb;
+            const int8_t q = qbase+(size_t)o * in;
+            const float* s = sbase+(size_t)o* nb;
             float acc = 0.f;
-            for(int g=0;g<nb;g++){
-                const uint8_t qg = q + g * 16;
-                const float* xg = x+g * GS;
-                float sum = 0.f;
-                for(int j=0;j<16;j++){
-                    sum += (float)((qg[j]& Ox0F)-8 * xg[j]+ (float)((qg[j]>>4)-8)*xg[j+16]);
-
-                }
-                acc+= sum * s[g];
-
-            }
-            y[o]=acc;
+            for(int g =0;g<nb;g++){
+                const int8_t* qg =q + g* GS;
+                const float xg = x +g * GS;
+                float sum   = 0.f;
+                for(int j=0;j<GS;j++) sum+=(float)qg[j] * xg[j];
+                    acc += sum * s[g];                                                                                                             
+            }   
+            y[o]= acc;
         }
 }
