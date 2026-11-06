@@ -7,7 +7,9 @@ authors = [
     { name = "adieesingh", email = "1606adarsh@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "huggingface-hub>=2.4.0",
+]
 
 [project.scripts]
 inference = "inference:main"
