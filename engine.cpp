@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <chrono>
 #include <vector>
+#include <cmath>
+
 
 static const int GS = 32;
 
@@ -50,7 +52,7 @@ static void read_excat(FILE *f, void *dst, size_t n)
     };
 };
 
-static void load_q( File *f, QTensor &t,size_t rows, size_t cols, int bits)
+static void load_q(File *f, QTensor& t,size_t rows, size_t cols, int bits)
 {
     size_t n = rows * cols;
     t.q.resize(bits == 4 ? n / 2 : n);
