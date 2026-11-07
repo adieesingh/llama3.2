@@ -118,7 +118,7 @@ static void load_model(const char *path, Model &m)
     fclose(f);
 }
 //
-static void matvec_q(float *y, float *x, const QTensor &w, int out, int in)
+static void matvec_q4(float *y, float *x, const QTensor &w, int out, int in)
 {
     const int nb = in / GS;
     const uint8_t *qbase = w.q.data();
@@ -232,4 +232,49 @@ static void attention(const Config&c,State& s,int layer,int pos){
                 for(int i=0;i<hd;i++) out[i] +=w * v[i]; 
            }
         }
+}
+
+// 
+static float* forward(const Model& m,State& s, int token,int pos,bool want_logits){
+    const Config& c = m.c;
+    const int dim = c.dim ,hd=c.head_dim,kv_dim=c.n_kv_heads*hd,q_dim=c.n_heads*hd;
+    if(token<0|| token>=c.vocab) die("token id out of range :"+std::to_string(token));
+    {
+        const int8t* q = (const int8_t)m.tok.q.data()+(size_t)token*dim;
+        const float* sc = m.tok.s.data()+(size_t)token *(dim/GS);
+        for(int i=0;i<dim;i++) s.x[i]=floatq[i]*sc[i/GS];
+
+    }
+    // ROPE angles 
+    for(int i=0;i<hd/2;i++){
+        const Layer& L=m.layers[l];
+        // 2. atten block (prenorm+residual)
+        rmsnorm(s.xn.data(),s.x.data(),L.attn_norm.data(),dim,c.eps);
+        matvec_q4(s.q.data(),s.xn.data(),L.wq,q_dim,dim);
+        float* kslot = s.kc.data()+((size_t)l*s.ctx+pos)*kv_dim;
+        float* vslot =s.vc.data()+((size_t)l* s.ctx+pos)*kv_dim;
+        matvec_q4(kslot,s.xn.data(),L.wk,kv_dim,dim);
+        matvec_q4(vslot,s.xn.data(),L.wv,kv_dim,dim);
+        rope(s.q.data(),c.n_heads,hd,s.cs.data(),s.sn.data());
+        rope(kslot,c.n_kv_heads,hd,s.cs.data(),s.sn.data());
+        attention(c,s,l,pos);
+        matvec_q4(s.proj.data(),s.ao.data(),L.wo,dim,q_dim);
+        for(int i=0;i<dim;i++)s.x[i]+=s.proj[i];
+        //3 feed forward block:Swiglu
+        rmsnorm(s.xn.data(),s.x.data(),L.ffn_norm.data(),dim,c.eps);
+        matvec_q4(s.hb.data(),s.xn.data(),L.wu,c.hidden,dim);
+        matvec_q4(s.hb2.data(),s.xn.data(),L.wu,c.hidden,dim);
+        for(int i=0;i<c.hidden;i++){
+            float g = s.hb[i];
+            s.hb[i]=(g/(1.0f+expf(-g)))*s.hb2[i];
+
+        }
+        matvec_q4(s.proj.data(),s.hb.data(),L.wd,dim,c.hidden);
+        for(int i=0;i<dim;i++) s.x[i]+=s.proj[i];
+    }
+    if(!want_logits) return nullptr;
+    // final norm score every token
+    rmsnorm(s.xn.data(),s.x.data(),m.tok,c.vocab,dim);
+    matvec_q8(s.logits.data(),s.xn.data(),m.tok,c.vocab,dim);
+    return s.logits.data();
 }
