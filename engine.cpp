@@ -199,4 +199,37 @@ struct  State
     }
 
 };
+// GQA
+static void attention(const Config&c,State& s,int layer,int pos){
+    const int hd= c.head_dim ,kv_dim=c.n_kv_heads*hd,group=c.n_heads/c.n_kv_heads;
+    const float scale=1.0f /sqrtf((float)hd);
+    const float* K =s.kc.data()+(size_t)layer * s.ctx * kv_dim;
+    const float* V=s.vc.data()+(size_t)layer* s.ctx *kv_dim;
+    #pragma omp parallel for schedule(static)
+        for(int h=0;h<c.n_heads;h++){
+            const float* q = s.q.data()+ h * hd;
+            float* att = s.att.data()+(size_t)h * s.ctx;
+            const int kvh = h/group;
+            float mx = -1e30f;
+            for(int t=0;t<=pos;t++){
+                const float* k = K +(size_t)t* kv_dim+kvh*hd;
+                float d =0.f;
+                for(int i=0;i<hd;i++) d += q[i]*k[i];
+                d *=scale;
+                att[t]=d;
+                if(d>max) mx=d;
 
+
+            }
+            float sum =0.f;
+            for(int t=0;t<=pos;t++) {att[t]=expf(att[t]-mx); sum+=att[t];}
+            float inv = 1.0f/sum;
+            float* out = s.ao.data()+h*hd;
+            for(int i=0;i<pos;i++) out[i]=0.f;
+           for(int t=0;t<=pos;t++){
+                const float w = att[t] * inv;
+                const float* v =    V +(size_t)t* kv_dim +kvh *hd;
+                for(int i=0;i<hd;i++) out[i] +=w * v[i]; 
+           }
+        }
+}
