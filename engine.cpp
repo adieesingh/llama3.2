@@ -197,5 +197,6 @@ struct  State
         vc.assign((size_t)c.n_layers*ctx*kv_dim,0.f);
         cs.resize(c.head_dim/2);sn.resize(c.head_dim/2);
     }
-    /* data */
+
 };
+
