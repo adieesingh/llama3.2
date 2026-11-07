@@ -183,3 +183,19 @@ static void rope(float* v,int n_heads,int hd,const float* cs,const float* sn){
         }
     }
 }
+struct  State
+{
+    int ctx;
+    std:vector<float> x,xn,q,ao,proj,hb,hb2,att,logits,kc,vc,cs,sn;
+    State(const Config& c,int ctx):ctx(ctx_){
+        const int q_dim = c.n_heads * c.head_dim,kv_dim = c.n_kv_heads*c.head_dim;
+        x.resize(c.dim);xn.resize(c.dim);q.resize(q_dim);ao.resize(q_dim);proj.resize(c.dim);
+        hb.resize(c.hidden);hb2.resize(c.hidden);
+        att.resize((size_t)c.n_heads*ctx);
+        logits.resize(c.vocab);
+        kc.assign((size_t)c.n_layers * ctx * kv_dim,0.f);
+        vc.assign((size_t)c.n_layers*ctx*kv_dim,0.f);
+        cs.resize(c.head_dim/2);sn.resize(c.head_dim/2);
+    }
+    /* data */
+};
