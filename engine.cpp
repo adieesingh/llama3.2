@@ -163,3 +163,10 @@ static void matvec_q8(float *y, float *x, const QTensor &w, int out, int in)
             y[o]= acc;
         }
 }
+
+static void rmsnorm(float* out,const float* x,const float* w,int n,float eps){
+    float ss = 0.f;
+    for(int i=0;i<n;i++) ss+= x[i]*x[i];
+    float inv = 1.0f/sqrtf(ss/n+eps);
+    for(int i=0;i<n;i++) out[i]=x[i]* inv *w[i];
+}
