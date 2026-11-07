@@ -170,3 +170,16 @@ static void rmsnorm(float* out,const float* x,const float* w,int n,float eps){
     float inv = 1.0f/sqrtf(ss/n+eps);
     for(int i=0;i<n;i++) out[i]=x[i]* inv *w[i];
 }
+
+//ROPE static void ro[e]
+static void rope(float* v,int n_heads,int hd,const float* cs,const float* sn){
+    const int half = hd /2;
+    for(int h=0;h<n_heads;h++){
+        float* p= v+h*hd;
+        for(int i=0;i<half;i++){
+            float a =p[i],b=p[i+half];
+            p[i]= a* cs[i]-b* sn[i];
+            p[  i+ half]= b* cs[i]+ a*sn[i];
+        }
+    }
+}
