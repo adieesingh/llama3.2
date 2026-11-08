@@ -2,6 +2,18 @@
 #include <chrono>
 #include <vector>
 #include <cmath>
+#include <string>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <numeric>
+#include <random>>
+#include <sstream>>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 static const int GS = 32;
 
@@ -377,62 +389,97 @@ int main(int argc, char **argv)
                         "[--maxnew 512] [--stop id,id] [--threads N] [--dump-logits]\n");
         return 2;
     }
-    const char* model_path =argv[1];
-    int ctx=2048,maxnew =512,topk=40,threads=0;
-    float temp =0.6f,topp=0.9f;
-    uint64_t seed =(uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
+    const char *model_path = argv[1];
+    int ctx = 2048, maxnew = 512, topk = 40, threads = 0;
+    float temp = 0.6f, topp = 0.9f;
+    uint64_t seed = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
     std::vector<int> stops;
     bool dump_logits = false;
-    for(int i=2;i<argc;i++){
-        std::string a=argv[i];
-        auto next =[&]()-> const char* {if(i+1 >= argc) die("missing value for"+a); return argv[++i];};
-        if(a=="--ctx") ctx=atoi(next());
-        else if (a=="--temp") temp =(float)atof(next());
-        else if(a=="--topp") topp =(float)atof(next());
-        else if(a=="--topk") topk=atoi(next());
-        else if(a=="--seed") seed=strtoull(next(),nullptr,10);
-        else if (a=="--maxnew") maxnew =atoi(next());
-        else if (a=="--threads") threads =atoi(next());
-        else if (a=="--stop") {std::string v =next();std::replace(v.begin(),v.end(),',',' ');stops =parse_ids(v)}
-        else if (a=="--dump-logits")dump_logits=true;
-        else die("unknown options"+a);
-
+    for (int i = 2; i < argc; i++)
+    {
+        std::string a = argv[i];
+        auto next = [&]() -> const char *
+        {if(i+1 >= argc) die("missing value for"+a); return argv[++i]; };
+        if (a == "--ctx")
+            ctx = atoi(next());
+        else if (a == "--temp")
+            temp = (float)atof(next());
+        else if (a == "--topp")
+            topp = (float)atof(next());
+        else if (a == "--topk")
+            topk = atoi(next());
+        else if (a == "--seed")
+            seed = strtoull(next(), nullptr, 10);
+        else if (a == "--maxnew")
+            maxnew = atoi(next());
+        else if (a == "--threads")
+            threads = atoi(next());
+        else if (a == "--stop")
+        {
+            std::string v = next();
+            std::replace(v.begin(), v.end(), ',', ' ');
+            stops = parse_ids(v)
+        }
+        else if (a == "--dump-logits")
+            dump_logits = true;
+        else
+            die("unknown options" + a);
     }
 #ifdef _OPENMP
-    if(threads>0) omp_set_num_threads(threads);
+    if (threads > 0)
+        omp_set_num_threads(threads);
 #endif
-    auto t0=std::chrono::steady_clock::now();
+    auto t0 = std::chrono::steady_clock::now();
     Model m;
-    load_model(model_path,m);
-    if(ctx>m.c.max_seq)ctx=m.c.max_seq;
-    State s(m.c,ctx);
-    double load_s =std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
-    fprintf(stderr,"[engine] %d layers,dim %d,heads %d/%d kv,vocab %d,ctx %d,loaded %.1fs\n",
-    m.c.n_layers,m.c.dim,m.c.n_heads,m.c.n_kv_heads,m.c.vocab,ctx,load_s);
+    load_model(model_path, m);
+    if (ctx > m.c.max_seq)
+        ctx = m.c.max_seq;
+    State s(m.c, ctx);
+    double load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    fprintf(stderr, "[engine] %d layers,dim %d,heads %d/%d kv,vocab %d,ctx %d,loaded %.1fs\n",
+            m.c.n_layers, m.c.dim, m.c.n_heads, m.c.n_kv_heads, m.c.vocab, ctx, load_s);
     std::mt19937_64 rng(seed);
     std::vector<int> scratch;
-    int pos =0;
+    int pos = 0;
     std::string line;
-    while(std::getline(std::cin,kine)){
-        while(!line.empty() && (line.back()=='\r' || line.back()==' '))line.pop_back();
-        if(line.empty()) continue;
-        if(line =="QUIT") break;
-        if(line =="RESET"){pos=0;printf("OK\n");fflush(stdout);continue;}
-        std::vector<int> ids=parse_ids(line);
-        if(ids.empty()){printf("ERR no token ids\n"); fflush(stdout);continue;}
-        if(*std::min_element(ids.begin(),ids.end()<0|| *std::max_element(ids.begin(),ids.end())>=m.c.vocab){
-            printf("ERR token id out of range(voacb is %d)\n",m.c.vocab);
+    while (std::getline(std::cin, kine))
+    {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+            line.pop_back();
+        if (line.empty())
+            continue;
+        if (line == "QUIT")
+            break;
+        if (line == "RESET")
+        {
+            pos = 0;
+            printf("OK\n");
             fflush(stdout);
             continue;
         }
-        if (pos +(int)ids.size()>=ctx){printf("ERR context full(%d/%d),send RESET\n,pos,ctx"):fflush(stdout);continue;};
+        std::vector<int> ids = parse_ids(line);
+        if (ids.empty())
+        {
+            printf("ERR no token ids\n");
+            fflush(stdout);
+            continue;
+        }
+        if(*std::min_element(ids.begin(),ids.end()<0|| *std::max_element(ids.begin(),ids.end())>=m.c.vocab){
+            printf("ERR token id out of range(voacb is %d)\n", m.c.vocab);
+            fflush(stdout);
+            continue;
+        }
+        if (pos +(int)ids.size()>=ctx){
+            printf("ERR context full(%d/%d),send RESET\n,pos,ctx") : fflush(stdout);
+            continue;};
         //prefill
         auto p0=std::chrono::steady_clock::now();
         float* logits = nullptr;
         for(size_t i=0;i<ids.size(),i++) logits =forward(m,s,ids[i],pos++,i+1==ids.size());
 
         if(dump_logits){
-            for(int v =0;v<m.c.vocab;v++) printf("%.9g\n",logits[v]);
+            for (int v = 0; v < m.c.vocab; v++)
+                printf("%.9g\n", logits[v]);
             fflush(stdout);
             return 0;
 
@@ -442,14 +489,19 @@ int main(int argc, char **argv)
         int produced =0;
         const char* reason="length";
         for(int step=0;step<maxnew;step++){
-            int next = sample_token(logits,m.c.vocab,temp,topp,topk,rng,scratch);
-            printf("T %dn",next);
+            int next = sample_token(logits, m.c.vocab, temp, topp, topk, rng, scratch);
+            printf("T %dn", next);
             fflush(stdout);
             produced++;
-            bool is_stop =std::find(stops.begin(),stops.end(),next) != stops.end();
-            if(pos>=ctx)break;
-            logits=forward(m,s,next,pos++,!is_stop && step+1<maxnew);
-            if(is_stop){reason ="stop";break;}
+            bool is_stop = std::find(stops.begin(), stops.end(), next) != stops.end();
+            if (pos >= ctx)
+                break;
+            logits = forward(m, s, next, pos++, !is_stop && step + 1 < maxnew);
+            if (is_stop)
+            {
+                reason = "stop";
+                break;
+            }
         }
         printf("END %s\n",reason);
         fflush(stdout);
@@ -458,7 +510,6 @@ int main(int argc, char **argv)
         double gn = std::chrono::duration<double>(std::chrono::steady_clock::now()-g0).count();
         fprintf(stder,"[engine] prompt %zu tok in %.1fs (%.1f tok/s) | generated %d tok in %.1fs (%.1f tok/s) | cache %d/%d\n",
         ids.size(),pf,ids.size()/std::max(pf,1e-19),produced,gn,produced/std::max(gn,1e-9),pos,ctx);
-
     }
     return 0;
 }
