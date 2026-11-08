@@ -304,3 +304,11 @@ static int sample_token(const float* logits,int n,float temp,float topp,int topk
     for(int i =0;i<cut;i++){acc+=p[i];if(r<=acc)return idx[i];}
     return idx[cut-1];
 }
+
+static std::vector<int> parse_ids(const std::string& line){
+    std::vector<int> ids;
+    std::istringstream ss(line);
+    long v;
+    while(ss >> v)ids.push_back((int)v);
+    return ids;
+}
