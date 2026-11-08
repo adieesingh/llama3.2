@@ -278,3 +278,29 @@ static float* forward(const Model& m,State& s, int token,int pos,bool want_logit
     matvec_q8(s.logits.data(),s.xn.data(),m.tok,c.vocab,dim);
     return s.logits.data();
 }
+    // sampling
+static int sample_token(const float* logits,int n,float temp,float topp,int topk,std::mt19937_64& rng,std::vector<int>& idx){
+    if(temp<=0.f){
+        int best =0;
+        for(int i=0;i<n;i++) if(logits[i]>logits[best]) best =i;
+        return best;
+    }
+    if (topk <=0 || topk>n) topk =n;
+    idx.resize(n)   ;
+        std::iota(idx.begin(),idx.end(),0);
+        std::partial_sort(idx.begin(),idx.begin()+topk,idx.end(),[&] (int a ,int b){return logits[a]>logits[b]});
+        std::vector<float> post(topk);
+        const float mx = logits [idx[0]];
+        double sum =0;
+    for(int i=0;i<topk;i++){p[i]=expf((logits[idx[i]]-mx)/temp);sum +=p[i]};
+    for(int i=0 ;i<topk;i++) p[i] =float(p[i]/sum);
+    int cut =topk;
+    float cum =0.f;
+    for(int i=0;i<topk;i++) {cum+=p[i];if(cum>=topp){cut=i+1;break;}};
+    float tot =0.f;
+    for(int i=0;i<cut;i++) tot+= p[i];
+    std::uniform_real_distribution<float> U(0.f,1.f);
+    float r=U(rng)* tot,acc =0.f;
+    for(int i =0;i<cut;i++){acc+=p[i];if(r<=acc)return idx[i];}
+    return idx[cut-1];
+}
