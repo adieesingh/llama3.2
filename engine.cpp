@@ -9,8 +9,8 @@
 #include <cstring>
 #include <iostream>
 #include <numeric>
-#include <random>>
-#include <sstream>>
+#include <random>
+#include <sstream>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -43,11 +43,13 @@ struct Model
     std::vector<Layer> layers;
     std::vector<float> final_norm;
 };
+
 static void die(const std::string &msg)
 {
     fprintf(stderr, "error: %s\n", msg.c_str());
     exit(1);
-};
+}
+
 static void read_excat(FILE *f, void *dst, size_t n)
 {
     uint8_t *p = (uint8_t *)dst;
@@ -57,38 +59,37 @@ static void read_excat(FILE *f, void *dst, size_t n)
         size_t want = n < CH ? n : CH;
         size_t got = fread(p, 1, want, f);
         if (got == 0)
-            die("unexpected end of model file(trucated?)");
+            die("unexpected end of model file (truncated?)");
         p += got;
         n -= got;
-    };
-};
+    }
+}
 
-static void load_q(FILE* f, QTensor& t, size_t rows, size_t cols, int bits)
-
+static void load_q(FILE *f, QTensor &t, size_t rows, size_t cols, int bits)
 {
     size_t n = rows * cols;
     t.q.resize(bits == 4 ? n / 2 : n);
     t.s.resize(n / GS);
     read_excat(f, t.q.data(), t.q.size());
-    read_excat(f, t.s.data(), t.s.size());
-};
+    read_excat(f, t.s.data(), t.s.size() * sizeof(float));
+}
 
 static void load_f32(FILE *f, std::vector<float> &v, size_t n)
 {
     v.resize(n);
     read_excat(f, v.data(), n * sizeof(float));
-};
+}
 
 static void load_model(const char *path, Model &m)
 {
     FILE *f = fopen(path, "rb");
     if (!f)
-        die(std::string("cannot open") + path);
+        die(std::string("cannot open ") + path);
 
     char magic[4];
     read_excat(f, magic, 4);
     if (memcmp(magic, "L3Q1", 4) != 0)
-        die("not an L2Q1 file (run convert_to_q4.py first)");
+        die("not an L3Q1 file (run convert_to_q4.py first)");
 
     Config &c = m.c;
     int32_t h[9];
@@ -104,9 +105,9 @@ static void load_model(const char *path, Model &m)
     c.group = h[8];
     read_excat(f, &c.eps, sizeof(float));
     if (c.group != GS)
-        die("group size mistach between convertor and engine");
+        die("group size mismatch between converter and engine");
     if (c.dim % 32 || c.hidden % GS || (c.n_heads * c.head_dim) % GS)
-        die("dimensions must be mutlipication of 32");
+        die("dimensions must be multiple of 32");
     load_f32(f, m.inv_freq, c.head_dim / 2);
     const int kv_dim = c.n_kv_heads * c.head_dim, q_dim = c.n_heads * c.head_dim;
     load_q(f, m.tok, c.vocab, c.dim, 8);
@@ -115,7 +116,7 @@ static void load_model(const char *path, Model &m)
     {
         Layer &L = m.layers[l];
         load_f32(f, L.attn_norm, c.dim);
-        load_f32(f, L.attn_norm, c.dim);
+        load_f32(f, L.ffn_norm, c.dim);
         load_q(f, L.wq, q_dim, c.dim, 4);
         load_q(f, L.wk, kv_dim, c.dim, 4);
         load_q(f, L.wv, kv_dim, c.dim, 4);
@@ -125,9 +126,16 @@ static void load_model(const char *path, Model &m)
         load_q(f, L.wd, c.dim, c.hidden, 4);
     }
     load_f32(f, m.final_norm, c.dim);
+
+    long pos = ftell(f);
+    fseek(f, 0, SEEK_END);
+    long end = ftell(f);
+    if (pos != end)
+        fprintf(stderr, "[engine] warning: %ld bytes unread in model file (read %ld of %ld)\n", end - pos, pos, end);
+
     fclose(f);
 }
-//
+
 static void matvec_q4(float *y, float *x, const QTensor &w, int out, int in)
 {
     const int nb = in / GS;
@@ -141,18 +149,21 @@ static void matvec_q4(float *y, float *x, const QTensor &w, int out, int in)
         float acc = 0.f;
         for (int g = 0; g < nb; g++)
         {
-            const uint8_t* qg = q + g * 16;
+            const uint8_t *qg = q + g * 16;
             const float *xg = x + g * GS;
             float sum = 0.f;
             for (int j = 0; j < 16; j++)
             {
-                sum += (float)((qg[j] & 0x0F) - 8 * xg[j] + (float)((qg[j] >> 4) - 8) * xg[j + 16]);
+                int w0 = (int)(qg[j] & 0x0F) - 8;
+                int w1 = (int)(qg[j] >> 4) - 8;
+                sum += (float)w0 * xg[j] + (float)w1 * xg[j + 16];
             }
             acc += sum * s[g];
         }
         y[o] = acc;
     }
 }
+
 static void matvec_q8(float *y, float *x, const QTensor &w, int out, int in)
 {
     const int nb = in / GS;
@@ -161,13 +172,13 @@ static void matvec_q8(float *y, float *x, const QTensor &w, int out, int in)
 #pragma omp parallel for schedule(static)
     for (int o = 0; o < out; o++)
     {
-        const int8_t* q = qbase + (size_t)o * in;
+        const int8_t *q = qbase + (size_t)o * in;
         const float *s = sbase + (size_t)o * nb;
         float acc = 0.f;
         for (int g = 0; g < nb; g++)
         {
             const int8_t *qg = q + g * GS;
-            const float* xg = x + g * GS;
+            const float *xg = x + g * GS;
             float sum = 0.f;
             for (int j = 0; j < GS; j++)
                 sum += (float)qg[j] * xg[j];
@@ -187,7 +198,6 @@ static void rmsnorm(float *out, const float *x, const float *w, int n, float eps
         out[i] = x[i] * inv * w[i];
 }
 
-// ROPE static void ro[e]
 static void rope(float *v, int n_heads, int hd, const float *cs, const float *sn)
 {
     const int half = hd / 2;
@@ -202,6 +212,7 @@ static void rope(float *v, int n_heads, int hd, const float *cs, const float *sn
         }
     }
 }
+
 struct State
 {
     int ctx;
@@ -224,7 +235,7 @@ struct State
         sn.resize(c.head_dim / 2);
     }
 };
-// GQA
+
 static void attention(const Config &c, State &s, int layer, int pos)
 {
     const int hd = c.head_dim, kv_dim = c.n_kv_heads * hd, group = c.n_heads / c.n_kv_heads;
@@ -256,7 +267,7 @@ static void attention(const Config &c, State &s, int layer, int pos)
         }
         float inv = 1.0f / sum;
         float *out = s.ao.data() + h * hd;
-        for (int i = 0; i < pos; i++)
+        for (int i = 0; i < hd; i++)
             out[i] = 0.f;
         for (int t = 0; t <= pos; t++)
         {
@@ -268,24 +279,30 @@ static void attention(const Config &c, State &s, int layer, int pos)
     }
 }
 
-//
 static float *forward(const Model &m, State &s, int token, int pos, bool want_logits)
 {
     const Config &c = m.c;
     const int dim = c.dim, hd = c.head_dim, kv_dim = c.n_kv_heads * hd, q_dim = c.n_heads * hd;
     if (token < 0 || token >= c.vocab)
-        die("token id out of range :" + std::to_string(token));
+        die("token id out of range: " + std::to_string(token));
     {
-        const int8_t* q = (const int8_t*)m.tok.q.data() + (size_t)token * dim;
+        const int8_t *q = (const int8_t *)m.tok.q.data() + (size_t)token * dim;
         const float *sc = m.tok.s.data() + (size_t)token * (dim / GS);
         for (int i = 0; i < dim; i++)
             s.x[i] = (float)q[i] * sc[i / GS];
     }
     // ROPE angles
-    for (int l = 0; l < c.n_layers / 2; l++)
+    for (int i = 0; i < hd / 2; i++)
+    {
+        float a = (float)pos * m.inv_freq[i];
+        s.cs[i] = cosf(a);
+        s.sn[i] = sinf(a);
+    }
+
+    for (int l = 0; l < c.n_layers; l++)
     {
         const Layer &L = m.layers[l];
-        // 2. atten block (prenorm+residual)
+        // 2. attn block (prenorm + residual)
         rmsnorm(s.xn.data(), s.x.data(), L.attn_norm.data(), dim, c.eps);
         matvec_q4(s.q.data(), s.xn.data(), L.wq, q_dim, dim);
         float *kslot = s.kc.data() + ((size_t)l * s.ctx + pos) * kv_dim;
@@ -298,9 +315,9 @@ static float *forward(const Model &m, State &s, int token, int pos, bool want_lo
         matvec_q4(s.proj.data(), s.ao.data(), L.wo, dim, q_dim);
         for (int i = 0; i < dim; i++)
             s.x[i] += s.proj[i];
-        // 3 feed forward block:Swiglu
+        // 3. feed forward block: SwiGLU
         rmsnorm(s.xn.data(), s.x.data(), L.ffn_norm.data(), dim, c.eps);
-        matvec_q4(s.hb.data(), s.xn.data(), L.wu, c.hidden, dim);
+        matvec_q4(s.hb.data(), s.xn.data(), L.wg, c.hidden, dim);
         matvec_q4(s.hb2.data(), s.xn.data(), L.wu, c.hidden, dim);
         for (int i = 0; i < c.hidden; i++)
         {
@@ -314,10 +331,11 @@ static float *forward(const Model &m, State &s, int token, int pos, bool want_lo
     if (!want_logits)
         return nullptr;
     // final norm score every token
-    rmsnorm(s.xn.data(), s.x.data(), m.final_norm.data(), c.vocab, dim);
+    rmsnorm(s.xn.data(), s.x.data(), m.final_norm.data(), dim, c.eps);
     matvec_q8(s.logits.data(), s.xn.data(), m.tok, c.vocab, dim);
     return s.logits.data();
 }
+
 // sampling
 static int sample_token(const float *logits, int n, float temp, float topp, int topk, std::mt19937_64 &rng, std::vector<int> &idx)
 {
@@ -338,8 +356,13 @@ static int sample_token(const float *logits, int n, float temp, float topp, int 
     std::vector<float> p(topk);
     const float mx = logits[idx[0]];
     double sum = 0;
-    for (int i = 0; i < topk; i++){ p[i] = expf((logits[idx[i]] - mx) / temp);sum += p[i];};
-    for (int i = 0; i < topk; i++) p[i] = (float)(p[i] / sum);
+    for (int i = 0; i < topk; i++)
+    {
+        p[i] = expf((logits[idx[i]] - mx) / temp);
+        sum += p[i];
+    }
+    for (int i = 0; i < topk; i++)
+        p[i] = (float)(p[i] / sum);
     int cut = topk;
     float cum = 0.f;
     for (int i = 0; i < topk; i++)
@@ -350,7 +373,7 @@ static int sample_token(const float *logits, int n, float temp, float topp, int 
             cut = i + 1;
             break;
         }
-    };
+    }
     float tot = 0.f;
     for (int i = 0; i < cut; i++)
         tot += p[i];
@@ -374,12 +397,13 @@ static std::vector<int> parse_ids(const std::string &line)
         ids.push_back((int)v);
     return ids;
 }
+
 // main
 int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        fprintf(stderr, "usage: engine model.bin[--ctx 2048] [--temp 0.6] [--topk 40][--seed N]\n"
+        fprintf(stderr, "usage: engine model.bin [--ctx 2048] [--temp 0.6] [--topk 40] [--seed N]\n"
                         "[--maxnew 512] [--stop id,id] [--threads N] [--dump-logits]\n");
         return 2;
     }
@@ -393,7 +417,11 @@ int main(int argc, char **argv)
     {
         std::string a = argv[i];
         auto next = [&]() -> const char *
-        {if(i+1 >= argc) die("missing value for"+a); return argv[++i]; };
+        {
+            if (i + 1 >= argc)
+                die("missing value for " + a);
+            return argv[++i];
+        };
         if (a == "--ctx")
             ctx = atoi(next());
         else if (a == "--temp")
@@ -417,7 +445,7 @@ int main(int argc, char **argv)
         else if (a == "--dump-logits")
             dump_logits = true;
         else
-            die("unknown options" + a);
+            die("unknown option " + a);
     }
 #ifdef _OPENMP
     if (threads > 0)
@@ -458,33 +486,39 @@ int main(int argc, char **argv)
             fflush(stdout);
             continue;
         }
-        if(*std::min_element(ids.begin(),ids.end())<0|| *std::max_element(ids.begin(),ids.end())>=m.c.vocab){
-            printf("ERR token id out of range(voacb is %d)\n", m.c.vocab);
+        if (*std::min_element(ids.begin(), ids.end()) < 0 || *std::max_element(ids.begin(), ids.end()) >= m.c.vocab)
+        {
+            printf("ERR token id out of range (vocab is %d)\n", m.c.vocab);
             fflush(stdout);
             continue;
         }
-        if (pos +(int)ids.size()>=ctx){
-            printf("ERR context full(%d/%d),send RESET\n,pos,ctx"); fflush(stdout);
-            continue;};
-        //prefill
-        auto p0=std::chrono::steady_clock::now();
-        float* logits = nullptr;
-        for(size_t i=0;i<ids.size();i++) logits =forward(m,s,ids[i],pos++,i+1==ids.size());
+        if (pos + (int)ids.size() >= ctx)
+        {
+            printf("ERR context full (%d/%d), send RESET\n", pos, ctx);
+            fflush(stdout);
+            continue;
+        }
+        // prefill
+        auto p0 = std::chrono::steady_clock::now();
+        float *logits = nullptr;
+        for (size_t i = 0; i < ids.size(); i++)
+            logits = forward(m, s, ids[i], pos++, i + 1 == ids.size());
 
-        if(dump_logits){
+        if (dump_logits)
+        {
             for (int v = 0; v < m.c.vocab; v++)
                 printf("%.9g\n", logits[v]);
             fflush(stdout);
             return 0;
-
         }
         // decode
-        auto g0=std::chrono::steady_clock::now();
-        int produced =0;
-        const char* reason="length";
-        for(int step=0;step<maxnew;step++){
+        auto g0 = std::chrono::steady_clock::now();
+        int produced = 0;
+        const char *reason = "length";
+        for (int step = 0; step < maxnew; step++)
+        {
             int next = sample_token(logits, m.c.vocab, temp, topp, topk, rng, scratch);
-            printf("T %dn", next);
+            printf("T %d\n", next);
             fflush(stdout);
             produced++;
             bool is_stop = std::find(stops.begin(), stops.end(), next) != stops.end();
@@ -497,13 +531,13 @@ int main(int argc, char **argv)
                 break;
             }
         }
-        printf("END %s\n",reason);
+        printf("END %s\n", reason);
         fflush(stdout);
 
-        double pf = std::chrono::duration<double>(g0-p0).count();
-        double gn = std::chrono::duration<double>(std::chrono::steady_clock::now()-g0).count();
-        fprintf(stderr,"[engine] prompt %zu tok in %.1fs (%.1f tok/s) | generated %d tok in %.1fs (%.1f tok/s) | cache %d/%d\n",
-        ids.size(),pf,ids.size()/std::max(pf,1e-19),produced,gn,produced/std::max(gn,1e-9),pos,ctx);
+        double pf = std::chrono::duration<double>(g0 - p0).count();
+        double gn = std::chrono::duration<double>(std::chrono::steady_clock::now() - g0).count();
+        fprintf(stderr, "[engine] prompt %zu tok in %.1fs (%.1f tok/s) | generated %d tok in %.1fs (%.1f tok/s) | cache %d/%d\n",
+                ids.size(), pf, ids.size() / std::max(pf, 1e-9), produced, gn, produced / std::max(gn, 1e-9), pos, ctx);
     }
     return 0;
 }

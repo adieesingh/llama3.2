@@ -95,7 +95,7 @@ def main():
                 # Decode everything so far and print only the new part. A character can be split over
                 # several tokens; while it is incomplete the text ends with U+FFFD, so we wait.
                 s = tok.decode(out_ids, skip_special_tokens=False)
-                end = len(s) - 1 if s.endswith("�") else len(s)
+                end = len(s) - 1 if s.endswith("\uFFFD") else len(s)
                 if end > printed:
                     print(s[printed:end], end="", flush=True)
                     printed = end
@@ -134,9 +134,20 @@ def main():
         try:
             eng.stdin.write("QUIT\n")
             eng.stdin.flush()
-        except Exception:  # noqa: BLE001
+        except BrokenPipeError:
             pass
-        eng.terminate()
+        try:
+            eng.stdin.close()
+        except BrokenPipeError:
+            pass
+        if eng.poll() is None:
+            eng.terminate()
+        try:
+            eng.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            eng.kill()
+            eng.wait()
+        eng.stdout.close()
 
 
 if __name__ == "__main__":

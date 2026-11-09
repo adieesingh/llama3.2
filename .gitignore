@@ -6,6 +6,10 @@
 # Downloaded models and Hugging Face cache
 /models/
 
+# Generated engine and quantized model
+/engine.exe
+/model.q4.bin
+
 # Python
 __pycache__/
 *.py[cod]
