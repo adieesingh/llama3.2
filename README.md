@@ -41,9 +41,12 @@ llama3.2/
 ├── chat.py             # Interactive chat interface & token streaming wrapper
 ├── convert_to_q4.py    # Memory-efficient safetensors-to-Q4 model quantizer
 ├── dowload_llama.py    # Gated Hugging Face weight downloader
-├── pyproject.toml      # Python dependencies and metadata (uv / pip)
+├── src/inference/      # Placeholder Python package from `uv init` (not used by the engine)
+├── pyproject.toml      # Python dependencies and metadata (uv)
 ├── uv.lock             # Deterministic lockfile for dependencies
-├── .gitignore          # Ignores downloaded models, binaries, and caches
+├── .python-version     # Python version pinned for uv (3.14)
+├── .vscode/            # VS Code C/C++ IntelliSense settings
+├── .gitignore          # Ignores models/, engine.exe, model.q4.bin, and caches
 └── README.md           # Project documentation
 ```
 
@@ -54,7 +57,7 @@ llama3.2/
 1. **C++ Compiler**: A C++17 compliant compiler with OpenMP support:
    - **Windows**: MinGW-w64 (`g++`) or MSVC (`cl.exe`).
    - **Linux / macOS**: `g++` or `clang++`.
-2. **Python**: Python >= 3.10 (tested up to Python 3.14).
+2. **Python**: `pyproject.toml` and `.python-version` pin Python 3.14 for `uv`. The scripts themselves only use the standard library plus `numpy`, `tokenizers`, and `huggingface_hub`, so an older Python with `pip` should also work (untested).
 3. **Hugging Face Account**:
    - Access granted for [meta-llama/Llama-3.2-3B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct) or [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct).
    - A Hugging Face Read Token (starts with `hf_...`).
@@ -76,6 +79,8 @@ Using [`uv`](https://github.com/astral-sh/uv) (recommended):
 ```bash
 uv sync
 ```
+
+> `pyproject.toml` currently lists only `huggingface-hub` and `tokenizers`. `convert_to_q4.py` also needs `numpy`, so run `uv add numpy` (or `uv pip install numpy`) before step 3.
 
 Or standard `pip`:
 ```bash
@@ -196,9 +201,34 @@ python chat.py `
 | `chat.py` | `--seed` | `None` | Random seed for sampling reproducibility |
 | `chat.py` | `--prompt` | `None` | Execute a single prompt and exit |
 | `chat.py` | `--raw` | `False` | Raw text continuation without chat templates |
-| `engine` | `--stop` | `<|eot_id|>,...` | Comma-separated token IDs that stop generation |
-| `engine` | `--topk` | `40` | Top-k candidate sampling limit |
+| `chat.py` | `--stop-ids` | `None` | Comma-separated token IDs that end an answer (default: `<|eot_id|>`, `<|end_of_text|>`, `<|eom_id|>` looked up from the tokenizer) |
+| `engine` | `model.bin` | *(required)* | First positional argument: path to the `L3Q1` model file |
+| `engine` | `--ctx` / `--maxnew` | `2048` / `512` | Context window / max generated tokens per turn |
+| `engine` | `--temp` / `--topp` | `0.6` / `0.9` | Sampling temperature / nucleus cutoff |
+| `engine` | `--topk` | `40` | Top-k candidate sampling limit (not exposed by `chat.py`) |
+| `engine` | `--seed` | time-based | Random seed |
+| `engine` | `--threads` | `0` | OpenMP threads (`0` = auto) |
+| `engine` | `--stop` | none | Comma-separated token IDs that stop generation (`chat.py` fills this in for you) |
 | `engine` | `--dump-logits` | `false` | Dump prompt logits and exit (for verification) |
+
+`chat.py` forwards `--ctx`, `--maxnew`, `--temp`, `--topp`, `--threads`, and `--seed` to the engine, so you normally only run the engine through `chat.py`.
+
+---
+
+## Engine Protocol (stdin / stdout)
+
+The engine only understands token IDs; `chat.py` handles text, templates, and tokenization. You can also drive it directly:
+
+| Direction | Line | Meaning |
+| :--- | :--- | :--- |
+| in | `12 345 6789 ...` | Space-separated token IDs to append to the conversation; generation starts immediately |
+| in | `RESET` | Clear the KV cache (engine replies `OK`) |
+| in | `QUIT` | Exit the engine |
+| out | `T <id>` | One generated token ID (streamed) |
+| out | `END stop` / `END length` | Generation finished on a stop token / on hitting `--maxnew` |
+| out | `ERR <message>` | Empty input, token ID out of range, or context full (send `RESET`) |
+
+Load time and prompt / generation speed (tokens per second) are printed to **stderr**.
 
 ---
 
@@ -227,8 +257,17 @@ The `L3Q1` binary format uses little-endian byte ordering:
 
 ---
 
+## Limitations
+
+- Only models with **tied embeddings** are supported (Llama 3.2 1B and 3B). The converter exits if it finds a separate `lm_head`.
+- Only the Llama 3.x (`llama3`) RoPE scaling type is supported.
+- Source weights must be `bf16`, `f16`, or `f32` safetensors; every weight matrix needs a column count divisible by the group size (32).
+- CPU only, single conversation at a time (one KV cache).
+
+---
+
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+Released under the MIT License. *(Note: no `LICENSE` file is in the repository yet; add one so the license is explicit.)*
 
 Model weights are subject to Meta's [Llama 3.2 Community License](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/LICENSE).
