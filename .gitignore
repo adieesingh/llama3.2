@@ -9,6 +9,8 @@
 # Generated engine and quantized model
 /engine.exe
 /model.q4.bin
+/bench_avx2.exe
+/engine.cpp.bak
 
 # Python
 __pycache__/

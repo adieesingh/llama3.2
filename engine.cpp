@@ -15,6 +15,8 @@
 #include <omp.h>
 #endif
 
+#include "avx2_kernels.h"
+
 static const int GS = 32;
 
 struct Config
@@ -35,7 +37,7 @@ struct Layer
     QTensor wq, wk, wv, wo, wg, wu, wd;
 };
 
-struct Model
+struct Model                                        
 {
     Config c;
     std::vector<float> inv_freq;
@@ -138,6 +140,10 @@ static void load_model(const char *path, Model &m)
 
 static void matvec_q4(float *y, float *x, const QTensor &w, int out, int in)
 {
+#ifdef HAVE_AVX2_KERNELS
+    matvec_q4_avx2(y, x, w.q.data(), w.s.data(), out, in);
+    return;
+#endif
     const int nb = in / GS;
     const uint8_t *qbase = w.q.data();
     const float *sbase = w.s.data();
@@ -166,6 +172,10 @@ static void matvec_q4(float *y, float *x, const QTensor &w, int out, int in)
 
 static void matvec_q8(float *y, float *x, const QTensor &w, int out, int in)
 {
+#ifdef HAVE_AVX2_KERNELS
+    matvec_q8_avx2(y, x, (const int8_t *)w.q.data(), w.s.data(), out, in);
+    return;
+#endif
     const int nb = in / GS;
     const int8_t *qbase = (const int8_t *)w.q.data();
     const float *sbase = w.s.data();
